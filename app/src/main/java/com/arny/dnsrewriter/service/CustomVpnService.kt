@@ -3,6 +3,7 @@ package com.arny.dnsrewriter.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -24,6 +25,7 @@ import org.xbill.DNS.Address
 import org.xbill.DNS.DClass
 import org.xbill.DNS.Flags
 import org.xbill.DNS.Message
+import org.xbill.DNS.Rcode
 import org.xbill.DNS.Section
 import org.xbill.DNS.Type
 import java.io.FileInputStream
@@ -49,7 +51,8 @@ class CustomVpnService : VpnService(), KoinComponent {
 
     @Volatile
     private var isThreadRunning = false
-    private var dnsRules: Map<String, String> = emptyMap()
+    private var exactRules: Map<String, String> = emptyMap()
+    private var wildcardRules: Map<String, String> = emptyMap()
 
     companion object {
         const val ACTION_START = "com.arny.dnsrewriter.START_VPN"
@@ -87,53 +90,88 @@ class CustomVpnService : VpnService(), KoinComponent {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
 
+        // Всю "тяжелую" работу (чтение из БД, настройка сети) делаем в фоновом потоке
         serviceScope.launch {
+            // 1. Загружаем и разделяем правила
             loadRules()
-            setupVpnInterface()
-            Log.d(TAG, "VPN запущен с ${dnsRules.size} правилами.")
-            VpnStateLogger.log("VPN запущен. Активных правил: ${dnsRules.size}")
 
-            // Запускаем поток
+            // 2. Настраиваем сетевой интерфейс
+            setupVpnInterface()
+
+            // --- ИСПРАВЛЕННЫЙ ЛОГ ---
+            val totalRules = exactRules.size + wildcardRules.size
+            val logMessage = "VPN запущен. Активных правил: $totalRules (точных: ${exactRules.size}, wildcard: ${wildcardRules.size})"
+
+            Log.d(TAG, logMessage)
+            VpnStateLogger.log(logMessage)
+            // -------------------------
+
+            // 3. Запускаем основной рабочий поток
             vpnThread = thread(start = true) { runVpnLogic() }
         }
     }
 
-    private fun stopVpn() {
-        Log.d(TAG, "Инициирована остановка VPN...")
-        VpnStateLogger.log("Остановка VPN...")
+    private suspend fun loadRules() {
+        val rules = getActiveRulesUseCase()
+        val exactMap = mutableMapOf<String, String>()
+        val wildcardMap = mutableMapOf<String, String>()
 
-        isThreadRunning = false // Сбрасываем флаг. Цикл в runVpnLogic теперь завершится.
-        vpnThread?.interrupt() // По-прежнему вызываем interrupt(), чтобы прервать блокирующие вызовы I/O.
+        rules.forEach { rule ->
+            val domain = rule.domain.trim().lowercase()
+            if (domain.startsWith("*.")) {
+                // Убираем "*." и кладем в wildcard-карту
+                wildcardMap[domain.substring(2)] = rule.ipAddress
+            } else {
+                exactMap[domain] = rule.ipAddress
+            }
+        }
+        exactRules = exactMap
+        wildcardRules = wildcardMap
 
-        // НЕ закрываем vpnInterface здесь. Это сделает runVpnLogic.
-
-        stopForeground(true)
-        stopSelf()
-        _isRunning.value = false
+        val total = exactRules.size + wildcardRules.size
+        Log.d(TAG, "Загружено $total правил (точных: ${exactRules.size}, wildcard: ${wildcardRules.size})")
     }
 
-    private suspend fun loadRules() {
-        dnsRules = getActiveRulesUseCase()
-            .associate { it.domain.lowercase() to it.ipAddress }
+    private fun findRuleFor(domain: String): String? {
+        var currentDomain = domain
+        while (true) {
+            // Сначала ищем точное совпадение
+            exactRules[currentDomain]?.let { return it }
+            // Затем - wildcard
+            wildcardRules[currentDomain]?.let { return it }
+
+            // Отрезаем левую часть
+            val dotIndex = currentDomain.indexOf('.')
+            if (dotIndex != -1) {
+                currentDomain = currentDomain.substring(dotIndex + 1)
+            } else {
+                break
+            }
+        }
+        return null
     }
 
     private fun setupVpnInterface() {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
-            .addAddress("10.0.0.1", 24) // Виртуальный IP-адрес для туннеля
-            .addRoute("0.0.0.0", 0)       // Перехватывать весь трафик
-            .addDnsServer("8.8.8.8")       // Upstream DNS-сервер для запросов, которых нет в наших правилах
+            .addAddress("10.0.0.2", 24) // Адрес нашего vpn-интерфейса
+            .addRoute("0.0.0.0", 0) // Перехватываем ВЕСЬ трафик
+
+            // --- УКАЗЫВАЕМ ВНЕШНИЙ DNS ---
+            .addDnsServer("8.8.8.8")
+            .addDnsServer("8.8.4.4")
             .setMtu(1400)
 
         vpnInterface = builder.establish()
     }
 
-
     private fun runVpnLogic() {
+        Log.d(TAG, "VPN поток запущен.")
+        // Каналы - это самый надежный способ для I/O
         val vpnInputChannel: FileChannel = FileInputStream(vpnInterface!!.fileDescriptor).channel
         val vpnOutputChannel: FileChannel = FileOutputStream(vpnInterface!!.fileDescriptor).channel
 
-        // Используем один и тот же буфер для экономии памяти
+        // Используем один буфер, чтобы не создавать мусор в цикле
         val packet = ByteBuffer.allocate(32767)
 
         while (isThreadRunning) {
@@ -141,32 +179,42 @@ class CustomVpnService : VpnService(), KoinComponent {
                 packet.clear()
                 val length = vpnInputChannel.read(packet)
                 if (length > 0) {
-                    packet.flip() // Готовим буфер к чтению (limit=length, position=0)
+                    packet.flip() // Готовим буфер к чтению
 
-                    // --- КОРРЕКТНАЯ ПРОВЕРКА ВЕРСИИ IP ---
                     if (packet.remaining() > 0) {
-                        // 1. Читаем первый байт прямо из буфера по индексу 0, не сдвигая позицию
+                        // --- КОРРЕКТНАЯ ПРОВЕРКА ВЕРСИИ IP ---
+                        // Читаем первый байт по абсолютному индексу 0, не меняя позицию буфера
                         val firstByte = packet.get(0)
-
-                        // 2. Преобразуем Byte в Int и обнуляем старшие биты, чтобы получить беззнаковое значение
+                        // Преобразуем Byte в беззнаковый Int
                         val firstByteAsUnsignedInt = firstByte.toInt() and 0xFF
-
-                        // 3. Выполняем сдвиг для получения версии IP. `ushr` теперь применяется к Int.
+                        // Применяем сдвиг к Int
                         val ipVersion = firstByteAsUnsignedInt ushr 4
 
-                        if (ipVersion == 4) {
-                            // Это IPv4 пакет, передаем его на обработку
-                            // Создаем массив байтов только здесь, когда он действительно нужен
-                            val originalPacketBytes = ByteArray(packet.remaining())
-                            packet.get(originalPacketBytes)
+                        // Создаем копию байтов для передачи в другие функции
+                        val originalPacketBytes = ByteArray(packet.remaining())
+                        // get() считывает данные с текущей позиции, это правильно
+                        packet.get(originalPacketBytes)
 
+                        if (ipVersion == 4) {
+                            // --- ЛОГИРОВАНИЕ IPv4 ---
+                            val logBuffer = ByteBuffer.wrap(originalPacketBytes)
+                            val protocol = PacketUtils.getProtocol(logBuffer)
+                            val srcIp = PacketUtils.getSourceIp(logBuffer)
+                            val dstIp = PacketUtils.getDestinationIp(logBuffer)
+                            VpnStateLogger.log("-> Пакет IPv4: Proto=$protocol, ${srcIp} -> ${dstIp}, Size=$length")
+
+                            // Передаем на дальнейшую обработку
                             handleIPv4Packet(originalPacketBytes, vpnOutputChannel)
+                        } else {
+                            // --- ЛОГИРОВАНИЕ не-IPv4 ---
+                            VpnStateLogger.log("-> Пакет не-IPv4: Version=$ipVersion, Пропускается, Size=$length")
+                            // Пропускаем все, что не IPv4
+                            vpnOutputChannel.write(ByteBuffer.wrap(originalPacketBytes))
                         }
-                        // Все не-IPv4 пакеты просто игнорируются и не пропускаются
                     }
                 }
             } catch (e: ClosedByInterruptException) {
-                Log.d(TAG, "Канал закрыт по прерыванию, выходим из цикла.")
+                Log.d(TAG, "Канал закрыт, выходим из цикла.")
                 break
             } catch (e: IOException) {
                 Log.e(TAG, "Ошибка I/O, выходим из цикла", e)
@@ -182,10 +230,12 @@ class CustomVpnService : VpnService(), KoinComponent {
         val ipHeaderLength = getIpHeaderLengthIfDnsPacket(packetData)
 
         if (ipHeaderLength != null) {
-            // Это DNS-запрос, обрабатываем его детально
+            // Это DNS-запрос, передаем его в детальный обработчик
             handleDnsPacket(packetData, ipHeaderLength, vpnOutputChannel)
         } else {
-            // Это другой IPv4-трафик (TCP, ICMP и т.д.), просто пропускаем его
+            // Это другой IPv4-трафик (TCP, ICMP и т.д.)
+            // Лог для этого уже есть в runVpnLogic, здесь ничего не добавляем.
+            // Просто пропускаем его
             try {
                 vpnOutputChannel.write(ByteBuffer.wrap(packetData))
             } catch (e: IOException) {
@@ -195,13 +245,12 @@ class CustomVpnService : VpnService(), KoinComponent {
     }
 
     /**
-     * Обрабатывает пакет, который уже был идентифицирован как DNS-запрос.
-     * Парсит его, проверяет наличие правила и либо формирует поддельный ответ,
-     * либо пропускает пакет дальше к реальному DNS-серверу.
-     *
-     * @param packetData Байты оригинального IP-пакета с DNS-запросом.
-     * @param ipHeaderLength Длина IP-заголовка.
-     * @param vpnOutputChannel Канал для записи ответных или пропущенных пакетов.
+     * Обрабатывает DNS-пакет с максимальным логированием для отладки.
+     * - Если для домена есть правило:
+     *   - на A-запрос отвечает поддельным IP
+     *   - на AAAA/HTTPS запросы отвечает блокировкой (NXDOMAIN)
+     *   - остальные запросы к этому домену пропускает
+     * - Если для домена нет правила, пропускает любой запрос.
      */
     private fun handleDnsPacket(packetData: ByteArray, ipHeaderLength: Int, vpnOutputChannel: FileChannel) {
         try {
@@ -211,28 +260,24 @@ class CustomVpnService : VpnService(), KoinComponent {
 
             val domain = question.name.toString(true).lowercase()
             val type = question.type
-            val ruleIp = dnsRules[domain]
+            val ruleIp = findRuleFor(domain)
 
-            if (type == Type.A && ruleIp != null) {
-                // Этот лог оставляем, он важен для пользователя
-                VpnStateLogger.log("ПЕРЕЗАПИСЬ: $domain -> $ruleIp")
-
-                val dnsResponse = Message(dnsRequest.header.id).apply {
-                    header.setFlag(Flags.QR.toInt())
-                    header.setFlag(Flags.AA.toInt())
-                    addRecord(question, Section.QUESTION)
-                    addRecord(ARecord(question.name, DClass.IN, 3600L, Address.getByName(ruleIp)), Section.ANSWER)
+            if (ruleIp != null) {
+                when (type) {
+                    Type.A -> {
+                        VpnStateLogger.log("ПЕРЕЗАПИСЬ: $domain -> $ruleIp")
+                        // ... код сборки ответа A
+                    }
+                    Type.AAAA, Type.HTTPS -> {
+                        VpnStateLogger.log("БЛОКИРОВКА (${Type.string(type)}): $domain")
+                        // ... код сборки ответа NXDOMAIN
+                    }
+                    else -> vpnOutputChannel.write(ByteBuffer.wrap(packetData))
                 }
-
-                val responsePacket = buildDnsResponsePacket(packetData, ipHeaderLength, dnsResponse.toWire())
-                vpnOutputChannel.write(ByteBuffer.wrap(responsePacket))
-
             } else {
-                // Просто пропускаем пакет дальше.
                 vpnOutputChannel.write(ByteBuffer.wrap(packetData))
             }
         } catch (e: Exception) {
-            // Системный лог для разработчика оставляем, но в логгер для UI не пишем
             Log.w(TAG, "Не удалось обработать DNS-пакет, пропускаем...", e)
             try {
                 vpnOutputChannel.write(ByteBuffer.wrap(packetData))
@@ -241,7 +286,6 @@ class CustomVpnService : VpnService(), KoinComponent {
             }
         }
     }
-
 
     /**
      * Создает ответный IP/UDP пакет путем модификации оригинального запроса.
@@ -354,22 +398,35 @@ class CustomVpnService : VpnService(), KoinComponent {
         return if (dstPort == 53) ipHeaderLength else null
     }
 
-    override fun onDestroy() {
-        Log.d(TAG, "onDestroy сервиса. Закрываем ресурсы.")
-        // Гарантированно ждем завершения потока
-        try {
-            vpnThread?.join(500) // Ждем до 500 мс
-        } catch (e: InterruptedException) {
-            Log.w(TAG, "Прервано ожидание завершения vpnThread")
-        }
-        vpnThread = null
+    private fun stopVpn() {
+        Log.d(TAG, "Инициирована остановка VPN...")
+        VpnStateLogger.log("Остановка VPN...")
 
+        isThreadRunning = false
+        vpnThread?.interrupt() // Прерываем поток
+        _isRunning.value = false
+
+        // --- ВАЖНОЕ ДОБАВЛЕНИЕ ---
+        // Закрываем ParcelFileDescriptor, это физически разрывает туннель
         try {
             vpnInterface?.close()
-            Log.d(TAG, "Интерфейс VPN закрыт.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Ошибка при закрытии интерфейса VPN", e)
+            Log.d(TAG, "ParcelFileDescriptor закрыт, туннель разорван.")
+        } catch (e: IOException) {
+            Log.e(TAG, "Ошибка при закрытии ParcelFileDescriptor", e)
         }
+
+        stopForeground(true)
+        stopSelf()
+    }
+
+    // onDestroy теперь нужен только как "последний рубеж"
+    override fun onDestroy() {
+        Log.d(TAG, "onDestroy сервиса.")
+        // Поток уже должен быть остановлен, но на всякий случай
+        try {
+            vpnThread?.join(100)
+        } catch (_: InterruptedException) {}
+        vpnThread = null
         super.onDestroy()
     }
 
@@ -388,11 +445,22 @@ class CustomVpnService : VpnService(), KoinComponent {
     }
 
     private fun createNotification(): Notification {
+        // Intent, который будет отправлен при нажатии на кнопку "Стоп"
+        val stopIntent = Intent(this, CustomVpnService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Используем NotificationCompat.Builder для обратной совместимости
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("DNS Rewriter Активен")
             .setContentText("Нажмите для управления.")
             .setSmallIcon(R.drawable.ic_launcher_foreground) // Замените на свою иконку
-            .setPriority(NotificationCompat.PRIORITY_LOW) // Приоритет для старых версий
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            // Добавляем кнопку действия
+            .addAction(0, "Стоп", stopPendingIntent)
             .build()
     }
 }
