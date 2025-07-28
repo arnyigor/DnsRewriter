@@ -1,20 +1,20 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.kotlin.compose)
 }
 
 android {
     namespace = "com.arny.dnsrewriter"
-    compileSdk = 36
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.arny.dnsrewriter"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -28,19 +28,22 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        // --- ОБНОВИТЕ ДО JAVA 17 ---
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "11"
+        // --- ОБНОВИТЕ ДО "17" ---
+        jvmTarget = "17"
     }
-    buildFeatures {
-        compose = true
+    composeOptions {
+        // Указываем компилятору Kotlin, какую версию Compose использовать
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 }
 
 dependencies {
-
+    // Jetpack Compose (оставляем как было)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -49,6 +52,25 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.extended)
+
+    // Koin
+    implementation(libs.koin.android)
+    implementation(libs.koin.compose)
+
+    // Room
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler) // Используем ksp вместо kapt
+
+    // ViewModel для Compose
+    implementation(libs.lifecycle.viewmodel.compose)
+
+    // DNS-парсер
+    implementation(libs.dns.java)
+    implementation(libs.slf4j.nop)
+
+    // Тестовые зависимости (оставляем как было)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
