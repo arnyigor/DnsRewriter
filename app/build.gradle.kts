@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -54,6 +55,14 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
+    implementation(libs.androidx.security.crypto)
+
+    implementation(libs.okhttp.core)
+    implementation(libs.okhttp.loggingInterceptor)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp.urlconnection)
+    implementation(libs.jsoup)
+
     // Koin
     implementation(libs.koin.android)
     implementation(libs.koin.compose)
@@ -67,7 +76,6 @@ dependencies {
     implementation(libs.lifecycle.viewmodel.compose)
 
     // DNS-парсер
-    implementation(libs.dns.java)
     implementation(libs.slf4j.nop)
 
     // Тестовые зависимости (оставляем как было)

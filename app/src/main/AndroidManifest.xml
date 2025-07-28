@@ -3,10 +3,6 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Это разрешение тоже нужно для foregroundServiceType="specialUse" -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-
     <application
         android:name=".DnsApp"
         android:allowBackup="true"
@@ -27,19 +23,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <service
-            android:name=".service.CustomVpnService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn" />
-        </service>
     </application>
 
 

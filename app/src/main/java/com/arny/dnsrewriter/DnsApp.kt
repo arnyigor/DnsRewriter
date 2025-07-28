@@ -2,6 +2,7 @@ package com.arny.dnsrewriter
 
 import android.app.Application
 import com.arny.dnsrewriter.di.appModule
+import com.arny.dnsrewriter.di.coroutinesModule
 import com.arny.dnsrewriter.di.dataModule
 import com.arny.dnsrewriter.di.domainModule
 import org.koin.android.ext.koin.androidContext
@@ -23,7 +24,7 @@ class DnsApp : Application() {
             androidContext(this@DnsApp)
 
             // Перечисляем все наши модули.
-            modules(listOf(domainModule, dataModule, appModule))
+            modules(listOf(domainModule, dataModule, appModule, coroutinesModule))
         }
     }
 }

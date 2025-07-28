@@ -11,12 +11,15 @@ activityCompose = "1.9.0"
 composeBom = "2024.06.00"
 materialIconsExtended = "1.6.8"
 slf4j = "1.7.32"
+okhttp = "4.12.0"
+kotlinxSerializationJson = "1.6.3"
+securityCrypto = "1.0.0"
+jsoup = "1.17.2"
 
 # --- ДОБАВЛЕННЫЕ ВЕРСИИ ---
 koin = "3.5.6"
 room = "2.6.1"
 lifecycleViewModelCompose = "2.8.1"
-dnsJava = "3.6.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -40,6 +43,14 @@ androidx-material-icons-extended = { group = "androidx.compose.material", name =
 koin-android = { group = "io.insert-koin", name = "koin-android", version.ref = "koin" }
 koin-compose = { group = "io.insert-koin", name = "koin-androidx-compose", version.ref = "koin" }
 
+okhttp-core = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+okhttp-loggingInterceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+okhttp-urlconnection = { group = "com.squareup.okhttp3", name = "okhttp-urlconnection", version.ref = "okhttp" }
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+
 # Room для локальной базы данных
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
@@ -48,14 +59,11 @@ room-compiler = { group = "androidx.room", name = "room-compiler", version.ref =
 # ViewModel для Compose
 lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleViewModelCompose" }
 
-# DNS-парсер
-dns-java = { group = "dnsjava", name = "dnsjava", version.ref = "dnsJava" }
 slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-
-# --- ДОБАВЛЕННЫЙ ПЛАГИН ---
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
